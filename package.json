@@ -1,0 +1,16 @@
+{
+  "name": "migri-appointment-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Poll Migri for earlier appointment slots and reschedule when beneficial",
+  "main": "index.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  }
+}

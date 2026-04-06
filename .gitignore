@@ -1,0 +1,5 @@
+.env
+node_modules
+status.json
+changes.txt
+output.txt
