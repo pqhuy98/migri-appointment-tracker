@@ -10,11 +10,11 @@ The program runs in the background using two independent poll loops:
 
 Appointment rescheduling rules:
 - Only consider slots earlier than the current booked appointment.
-- In normal mode, skip slots that are still today in Helsinki local date and log them as missed opportunities. This avoids too-close appointments that may cause a 50 EUR no-show penalty.
+- In normal mode, skip slots whose Helsinki local date is earlier than the appointment's `min-date` and log them as missed opportunities.
 - When trying to move an appointment, sort the earlier slots, try the best valid candidate first, and if that modify call fails (i.e. someone else snatches it quicker than us), then try exactly one second candidate, never a third.
-- `--best` is an emergency one-shot mode: run the appointment tick once and the slot tick once, bypass the same-day gating, then exit.
+- `--best` is an emergency one-shot mode: run the appointment tick once and the slot tick once, bypass the min-date gating, then exit.
 
-The system does not send its own notifications. Appointments are configured from `.env` as `APPOINTMENT1`, `APPOINTMENT2`, ... with `key:pin:type`, where type is currently `prp` or `work`. Order in `.env` matters: earlier entries get first chance at the best slot. Human-readable logs use Helsinki timezone, while API request dates and timestamps stay in UTC. The code should stay extremely simple: plain JavaScript, Node.js runtime, one `index.js` file.
+The system does not send its own notifications. Appointments are configured from `.env` as `APPOINTMENT1`, `APPOINTMENT2`, ... with `key:pin:type[:min-date]`, where type is currently `prp` or `work`. `min-date` is optional and, when provided as `YYYY-MM-DD`, prevents rescheduling to any earlier Helsinki local date; when omitted, it defaults to today in Helsinki. Order in `.env` matters: earlier entries get first chance at the best slot. Human-readable logs use Helsinki timezone, while API request dates and timestamps stay in UTC. The code should stay extremely simple: plain JavaScript, Node.js runtime, one `index.js` file.
 
 ## Notes
 - **`status.json`** is rewritten after each appointment poll and after each slots poll. It holds a snapshot of our tracked appointments, the earliest open slot the tool last tracked per permit **type**, and other metadata.

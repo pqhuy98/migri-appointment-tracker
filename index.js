@@ -1,6 +1,6 @@
 /**
  * Migri appointment slot monitor — single-file poller.
- * Reads APPOINTMENT1, APPOINTMENT2, ... as key:pin:type (see .env.example).
+ * Reads APPOINTMENT1, APPOINTMENT2, ... as key:pin:type[:minDate] (see .env.example).
  * AUTHCHECK for management APIs comes from POST .../allocations/key/<key>/pintest (Set-Cookie).
  */
 
@@ -24,24 +24,56 @@ const SERVICE_ID_BY_TYPE = {
   work: SERVICE_ID_WORK,
 };
 
+function isValidYyyyMmDd(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [y, m, d] = value.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return (
+    dt.getUTCFullYear() === y &&
+    dt.getUTCMonth() + 1 === m &&
+    dt.getUTCDate() === d
+  );
+}
+
 function parseAppointments() {
   const list = [];
+  const defaultMinDate = helsinkiDateYyyyMmDd(new Date());
   for (let i = 1; ; i++) {
     const raw = process.env[`APPOINTMENT${i}`];
     if (raw === undefined || String(raw).trim() === "") break;
 
     const parts = String(raw).split(":");
     if (parts.length < 3) {
-      console.error(`APPOINTMENT${i} must be key:pin:type (type is prp or work)`);
+      console.error(`APPOINTMENT${i} must be key:pin:type[:minDate] (type is prp or work)`);
       process.exit(1);
     }
 
-    const type = parts[parts.length - 1].trim().toLowerCase();
+    let typePartIndex = parts.length - 1;
+    let minDate = null;
+    if (parts.length >= 4) {
+      const maybeType = parts[parts.length - 2].trim().toLowerCase();
+      const maybeMinDate = parts[parts.length - 1].trim();
+      if (SERVICE_ID_BY_TYPE[maybeType]) {
+        if (!isValidYyyyMmDd(maybeMinDate)) {
+          console.error(`APPOINTMENT${i}: minDate must be YYYY-MM-DD when provided`);
+          process.exit(1);
+        }
+        minDate = maybeMinDate;
+        typePartIndex = parts.length - 2;
+      }
+    }
+
+    if (typePartIndex < 2) {
+      console.error(`APPOINTMENT${i} must be key:pin:type[:minDate]`);
+      process.exit(1);
+    }
+
+    const type = parts[typePartIndex].trim().toLowerCase();
     const key = parts[0].trim();
-    const pin = parts.slice(1, -1).join(":");
+    const pin = parts.slice(1, typePartIndex).join(":");
     const serviceId = SERVICE_ID_BY_TYPE[type];
     if (!serviceId) {
-      console.error(`APPOINTMENT${i}: unknown type "${parts[parts.length - 1].trim()}", use prp or work`);
+      console.error(`APPOINTMENT${i}: unknown type "${parts[typePartIndex].trim()}", use prp or work`);
       process.exit(1);
     }
     if (!key || !pin) {
@@ -49,7 +81,7 @@ function parseAppointments() {
       process.exit(1);
     }
 
-    list.push({ key, pin, serviceId, type });
+    list.push({ key, pin, serviceId, type, minDate: minDate || defaultMinDate });
   }
 
   if (list.length === 0) {
@@ -125,6 +157,7 @@ function buildStatusSnapshot() {
         key: a.key,
         type: a.type,
         serviceId: a.serviceId,
+        minDate: a.minDate,
         startIso: start,
         startHelsinki: start ? formatApptTime(start) : null,
       };
@@ -214,13 +247,13 @@ function printRescheduleBanner(key, type, toIso) {
   console.log(bar);
 }
 
-function printMissedOpportunityBanner(key, type, toIso) {
+function printMissedOpportunityBanner(key, type, toIso, minDate) {
   const t = formatApptTime(toIso);
   const bar = "!".repeat(64);
   console.log(bar);
   console.log("  MISSED OPPORTUNITY");
   console.log(`  ${key}  (${type})  →  ${t}`);
-  console.log("  Earlier slot found, but skipped because it is too close (today in Helsinki).");
+  console.log(`  Earlier slot found, but skipped because it is before min-date ${minDate}.`);
   console.log(bar);
 }
 
@@ -421,6 +454,12 @@ function sortedUniqueTimestamps(availabilities) {
   );
 }
 
+function canRescheduleToTimestamp(iso, minDate, bestModeEnabled) {
+  const date = helsinkiDateYyyyMmDd(iso);
+  if (!bestModeEnabled && date < minDate) return false;
+  return true;
+}
+
 async function pollAppointments() {
   /** @type {{ key: string, type: string, fromIso: string, toIso: string }[]} */
   const improvedAppointments = [];
@@ -462,11 +501,10 @@ async function pollSlotsAndMaybeReschedule() {
   }
 
   const startDate = todayYyyyMmDd();
-  const todayHelsinki = helsinkiDateYyyyMmDd(new Date());
 
   /** @type {{ key: string, type: string, toIso: string }[]} */
   const rescheduleEvents = [];
-  /** @type {{ key: string, type: string, toIso: string }[]} */
+  /** @type {{ key: string, type: string, toIso: string, minDate: string }[]} */
   const missedOpportunityEvents = [];
   /** @type {{ key: string, type: string, oldMs: number, newIso: string }[]} */
   const poolEarlierNotBetter = [];
@@ -535,12 +573,17 @@ async function pollSlotsAndMaybeReschedule() {
       continue;
     }
 
-    if (!bestMode && helsinkiDateYyyyMmDd(earlierCandidates[0]) <= todayHelsinki) {
-      missedOpportunityEvents.push({ key: a.key, type: a.type, toIso: earlierCandidates[0] });
+    if (!bestMode && helsinkiDateYyyyMmDd(earlierCandidates[0]) < a.minDate) {
+      missedOpportunityEvents.push({
+        key: a.key,
+        type: a.type,
+        toIso: earlierCandidates[0],
+        minDate: a.minDate,
+      });
     }
 
-    const validCandidatesFromCache = earlierCandidates.filter(
-      (iso) => bestMode || helsinkiDateYyyyMmDd(iso) > todayHelsinki
+    const validCandidatesFromCache = earlierCandidates.filter((iso) =>
+      canRescheduleToTimestamp(iso, a.minDate, bestMode)
     );
     if (validCandidatesFromCache.length === 0) {
       continue;
@@ -577,7 +620,7 @@ async function pollSlotsAndMaybeReschedule() {
     const attemptCandidates = sortedStarts
       .filter((iso) => {
         const ms = new Date(iso).getTime();
-        return ms < liveMyMs && (bestMode || helsinkiDateYyyyMmDd(iso) > todayHelsinki);
+        return ms < liveMyMs && canRescheduleToTimestamp(iso, a.minDate, bestMode);
       })
       .slice(0, 2);
     if (attemptCandidates.length === 0) {
@@ -636,7 +679,7 @@ async function pollSlotsAndMaybeReschedule() {
     flushDotLine();
     printedSomething = true;
     for (const m of missedOpportunityEvents) {
-      printMissedOpportunityBanner(m.key, m.type, m.toIso);
+      printMissedOpportunityBanner(m.key, m.type, m.toIso, m.minDate);
     }
   }
 
